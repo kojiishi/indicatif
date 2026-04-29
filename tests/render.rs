@@ -1900,3 +1900,24 @@ Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec nec viverra massa
 . Nunc nisl lectus, auctor in lorem eu, maximus elementum est."#
     );
 }
+
+#[test]
+#[cfg(feature = "unicode-width")]
+fn cjk_msg_at_the_end_wrap() {
+    let message = "こんにちは"; // 5 CJK characters, width 10
+    let width = 10;
+    let in_mem = InMemoryTerm::new(width, 10);
+    let pb = ProgressBar::with_draw_target(
+        Some(10),
+        ProgressDrawTarget::term_like(Box::new(in_mem.clone())),
+    )
+    .with_style(ProgressStyle::with_template(" {msg}").unwrap());
+    pb.set_message(message);
+    pb.tick();
+
+    // Formatted string is " こんにちは" (11 columns).
+    // The last wide char can't fit in 1 column, and thus wraps.
+    // Line 1: " こんにち" (9 columns)
+    // Line 2: "は" (2 columns)
+    assert_eq!(in_mem.contents(), " こんにち\nは");
+}
