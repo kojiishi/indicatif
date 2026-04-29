@@ -7,7 +7,11 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
+#[cfg(feature = "unicode-width")]
+use console::AnsiCodeIterator;
 use console::{Term, TermTarget};
+#[cfg(feature = "unicode-width")]
+use unicode_width::UnicodeWidthChar;
 #[cfg(all(target_arch = "wasm32", feature = "wasmbind"))]
 use web_time::Instant;
 
@@ -556,23 +560,23 @@ impl DrawState {
         let mut real_height = VisualLines::default();
 
         for line in self.lines.iter() {
-            let line_height = line.wrapped_height(term_width);
+            let metrics = line.wrapped_metrics(term_width);
 
             // Check here for bar lines that exceed the terminal height
             if matches!(line, LineType::Bar(_)) {
                 // Stop here if printing this bar would exceed the terminal height
-                if real_height + line_height > term.height().into() {
+                if real_height + metrics.height > term.height().into() {
                     break;
                 }
 
-                real_height += line_height;
+                real_height += metrics.height;
             }
 
             term.write_str(line.as_ref())?;
 
             // clear the line and keep the cursor on the right terminal side so that
             // future writes/prints will happen on the next line
-            let line_filler = line_height.as_usize() * term_width - line.console_width();
+            let line_filler = term_width - metrics.last_line_width;
             term.write_str(&" ".repeat(line_filler))?;
         }
 
@@ -657,17 +661,58 @@ pub(crate) enum LineType {
 
 impl LineType {
     fn wrapped_height(&self, width: usize) -> VisualLines {
+        self.wrapped_metrics(width).height
+    }
+
+    #[cfg(feature = "unicode-width")]
+    fn wrapped_metrics(&self, width: usize) -> Metrics {
+        // When a wide character such as CJK appears at the end of wrap with
+        // only 1 column available, the line wraps before the character, leaving
+        // an empty column.
+        // The `effective_width` takes such empty columns into account.
+        let str = self.as_ref();
+        let mut num_lines: usize = 1;
+        let mut column: usize = 0;
+        for (substr, is_ansi) in AnsiCodeIterator::new(str) {
+            if is_ansi {
+                continue;
+            }
+            for ch in substr.chars() {
+                let Some(ch_width) = UnicodeWidthChar::width(ch) else {
+                    continue; // Skip control characters.
+                };
+                column += ch_width;
+                if column > width {
+                    num_lines += 1;
+                    column = ch_width;
+                }
+            }
+        }
+        Metrics {
+            height: num_lines.into(),
+            last_line_width: column,
+        }
+    }
+
+    #[cfg(not(feature = "unicode-width"))]
+    fn wrapped_metrics(&self, width: usize) -> Metrics {
         // Calculate real length based on terminal width
         // This take in account linewrap from terminal
-        let terminal_len = (self.console_width() as f64 / width as f64).ceil() as usize;
+        let unwrapped_width = self.console_width();
+        let terminal_len = (unwrapped_width as f64 / width as f64).ceil() as usize;
 
         // If the line is effectively empty (for example when it consists
         // solely of ANSI color code sequences, count it the same as a
         // new line. If the line is measured to be len = 0, we will
         // subtract with overflow later.
-        usize::max(terminal_len, 1).into()
+        let height = usize::max(terminal_len, 1);
+        Metrics {
+            height: height.into(),
+            last_line_width: unwrapped_width - width * (height - 1),
+        }
     }
 
+    #[cfg(not(feature = "unicode-width"))]
     fn console_width(&self) -> usize {
         console::measure_text_width(self.as_ref())
     }
@@ -686,6 +731,15 @@ impl PartialEq<str> for LineType {
     fn eq(&self, other: &str) -> bool {
         self.as_ref() == other
     }
+}
+
+/// Metrics of wrapped lines.
+#[derive(Debug)]
+struct Metrics {
+    /// The number of lines.
+    height: VisualLines,
+    /// The width of the last line.
+    last_line_width: usize,
 }
 
 #[cfg(test)]
@@ -818,5 +872,25 @@ mod tests {
             },
         };
         assert!(multi_draw_target.is_stderr());
+    }
+
+    #[test]
+    fn wrapped_height_cjk_at_the_end_wrap() {
+        // Although the text is 20 columns (18 ASCII and 1 wide), when the width
+        // is 10, its height should be 3 because the wide character can't be
+        // broken in the middle.
+        let text = "123456789国123456789";
+        let line_type = LineType::Text(text.to_string());
+        let metrics = line_type.wrapped_metrics(10);
+        #[cfg(feature = "unicode-width")]
+        {
+            assert_eq!(metrics.height.as_usize(), 3);
+            assert_eq!(metrics.last_line_width, 1);
+        }
+        #[cfg(not(feature = "unicode-width"))]
+        {
+            assert_eq!(metrics.height.as_usize(), 2);
+            assert_eq!(metrics.last_line_width, 9);
+        }
     }
 }
