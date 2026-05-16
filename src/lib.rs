@@ -259,6 +259,7 @@ mod rayon;
 mod state;
 pub mod style;
 mod term_like;
+mod width;
 
 pub use crate::draw_target::ProgressDrawTarget;
 pub use crate::format::{
@@ -275,6 +276,7 @@ pub use crate::rayon::ParallelProgressIterator;
 pub use crate::state::{ProgressFinish, ProgressState};
 pub use crate::style::ProgressStyle;
 pub use crate::term_like::TermLike;
+pub use crate::width::Width;
 
 #[cfg(test)]
 mod tests {

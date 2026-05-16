@@ -3,10 +3,9 @@ use std::fmt::{self, Formatter, Write};
 use std::mem;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
-#[cfg(feature = "unicode-width")]
-use unicode_width::UnicodeWidthChar;
 
-use console::{measure_text_width, AnsiCodeIterator, Style};
+use crate::width::Width;
+use console::{AnsiCodeIterator, Style};
 #[cfg(feature = "unicode-segmentation")]
 use unicode_segmentation::UnicodeSegmentation;
 #[cfg(all(target_arch = "wasm32", feature = "wasmbind"))]
@@ -42,21 +41,11 @@ fn segment(s: &str) -> Vec<Box<str>> {
     s.chars().map(|x| x.to_string().into()).collect()
 }
 
-#[cfg(feature = "unicode-width")]
-fn measure(s: &str) -> usize {
-    unicode_width::UnicodeWidthStr::width(s)
-}
-
-#[cfg(not(feature = "unicode-width"))]
-fn measure(s: &str) -> usize {
-    s.chars().count()
-}
-
 /// finds the unicode-aware width of the passed grapheme cluters
 /// panics on an empty parameter, or if the characters are not equal-width
 fn width(c: &[Box<str>]) -> usize {
     c.iter()
-        .map(|s| measure(s.as_ref()))
+        .map(|s| Width::str(s.as_ref()))
         .fold(None, |acc, new| {
             match acc {
                 None => return Some(new),
@@ -467,8 +456,8 @@ impl WideElement<'_> {
     ) -> String {
         let left =
             (width as usize).saturating_sub(match cur.lines().find(|line| line.contains('\x00')) {
-                Some(line) => measure_text_width(&line.replace('\x00', "")),
-                None => measure_text_width(&cur),
+                Some(line) => Width::ansi_str(&line.replace('\x00', "")),
+                None => Width::ansi_str(&cur),
             });
         match self {
             Self::Bar { alt_style } => cur.replace(
@@ -738,7 +727,7 @@ struct PaddedStringDisplay<'a> {
 
 impl fmt::Display for PaddedStringDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cols = measure_text_width(self.str);
+        let cols = Width::ansi_str(self.str);
         let excess = cols.saturating_sub(self.width);
         if excess > 0 && !self.truncate {
             return f.write_str(self.str);
@@ -787,10 +776,7 @@ pub fn write_ansi_range(
         }
 
         for c in s.chars() {
-            #[cfg(feature = "unicode-width")]
-            let c_width = c.width().unwrap_or(0);
-            #[cfg(not(feature = "unicode-width"))]
-            let c_width = 1;
+            let c_width = Width::char(c);
             if start <= pos && pos + c_width <= end {
                 formatter.write_char(c)?;
             }
@@ -852,6 +838,7 @@ mod tests {
 
     use super::*;
     use crate::state::{AtomicPosition, ProgressState};
+    use crate::width::WIDTH_TEST_LOCK;
 
     use console::{set_colors_enabled, set_colors_enabled_stderr};
     use std::sync::Mutex;
@@ -1108,6 +1095,7 @@ mod tests {
 
     #[test]
     fn wide_element_style() {
+        let _guard = WIDTH_TEST_LOCK.lock().unwrap();
         set_colors_enabled(true);
 
         const CHARS: &str = "=>-";
